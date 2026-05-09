@@ -12,7 +12,6 @@
 #define NDIM 3
 #define N 513
 
-/* Initialization variables */
 const int    mc_steps        = 100000;
 const int    output_steps    = 1000;
 const double overall_density = 0.2;
@@ -21,33 +20,32 @@ const double r_cut           = 2.5;
 const double Temperature     = 2.0;
 const double beta            = 1.0 / Temperature;
 
-/* A Gibbs ensemble contains two boxes. The point of this struct is that
-   gas and liquid are now represented by the same kind of object. */
 typedef struct {
     int n;
+    double energy; 
     double r[N][NDIM];
     double box[NDIM];
     const char* input_file;
     const char* label;
 } Box;
 
-Box gas = { .n = 0, .input_file = "gas.dat",    .label = "gas" };
-Box liq = { .n = 0, .input_file = "liquid.dat", .label = "liq" };
+Box gas = { .n = 0, .energy=0, .input_file = "gas.dat",    .label = "gas" };
+Box liq = { .n = 0, .energy=0, .input_file = "liquid.dat", .label = "liq" };
 
-/* Simulation variables */
-int n_tot;
+
+double E_tot=0 ;
+double n_tot=0; 
 double e_cut;
-double energy = 0.0;
-double virial = 0.0;
-
-/* ------------------------------------------------------------------------- */
-/* Generic box utilities                                                     */
-/* ------------------------------------------------------------------------- */
+double dV = 0.0;
 
 double box_volume(const Box* b)
 {
     double volume = 1.0;
-    for(int d = 0; d < NDIM; ++d) volume *= b->box[d];
+
+    for(int d = 0; d < NDIM; ++d){
+        volume *= b->box[d];
+    }
+
     return volume;
 }
 
@@ -65,17 +63,19 @@ void read_box(Box* b)
     }
 
     if(b->n < 0 || b->n > N){
-        fprintf(stderr, "Error: file %s contains n = %d, but maximum allowed is N = %d\n",
+        fprintf(stderr, "Error: file %s contains n = %d, but maximum allowed is N = %d and n must be > 0\n",
                 b->input_file, b->n, N);
         exit(EXIT_FAILURE);
     }
 
     for(int d = 0; d < NDIM; ++d){
         double dmin, dmax;
+
         if(fscanf(fp, "%lf %lf\n", &dmin, &dmax) != 2){
             fprintf(stderr, "Error: could not read box size from %s\n", b->input_file);
             exit(EXIT_FAILURE);
         }
+
         b->box[d] = fabs(dmax - dmin);
     }
 
@@ -87,8 +87,8 @@ void read_box(Box* b)
             }
         }
 
-        /* The input format contains a final diameter column. We read and ignore it. */
         double diameter;
+
         if(fscanf(fp, "%lf\n", &diameter) != 1){
             fprintf(stderr, "Error: could not read particle diameter from %s\n", b->input_file);
             exit(EXIT_FAILURE);
@@ -102,6 +102,7 @@ void read_data(void)
 {
     read_box(&gas);
     read_box(&liq);
+
     n_tot = gas.n + liq.n;
 }
 
@@ -126,6 +127,7 @@ void write_box(const Box* b, int step)
         for(int d = 0; d < NDIM; ++d){
             fprintf(fp, "%f\t", b->r[n][d]);
         }
+
         fprintf(fp, "%lf\n", 1.0);
     }
 
@@ -161,13 +163,13 @@ void set_overall_density(void)
     rescale_box(&liq, scale_factor);
 }
 
-/* Minimum-image displacement between two positions inside the same box. */
 double distance_squared_pbc(const Box* b, const double a[NDIM], const double c[NDIM])
 {
     double r2 = 0.0;
 
     for(int d = 0; d < NDIM; ++d){
         double dr = a[d] - c[d];
+
         dr -= b->box[d] * round(dr / b->box[d]);
         r2 += dr * dr;
     }
@@ -175,16 +177,15 @@ double distance_squared_pbc(const Box* b, const double a[NDIM], const double c[N
     return r2;
 }
 
-/* Energy of a test particle placed at position pos in box b.
-   skip_index is ignored if negative. Use it to avoid a particle interacting
-   with itself when computing the energy of an already existing particle. */
 double particle_energy_at_position(const Box* b, const double pos[NDIM], int skip_index)
 {
     double en = 0.0;
     double r_cut2 = r_cut * r_cut;
 
     for(int j = 0; j < b->n; ++j){
-        if(j == skip_index) continue;
+        if(j == skip_index){
+            continue;
+        }
 
         double r2 = distance_squared_pbc(b, pos, b->r[j]);
 
@@ -200,14 +201,13 @@ double particle_energy_at_position(const Box* b, const double pos[NDIM], int ski
     return en;
 }
 
-/* Energy of one existing particle in its current box. */
 double particle_energy(const Box* b, int i)
 {
     assert(i >= 0 && i < b->n);
+
     return particle_energy_at_position(b, b->r[i], i);
 }
 
-/* Total intrabox potential energy. The factor 1/2 removes double counting. */
 double box_energy(const Box* b)
 {
     double en = 0.0;
@@ -233,7 +233,22 @@ void check_box(const Box* b)
 
 int displacement(void)
 {
-    /* Your MC displacement move goes here. */
+    return 0;
+}
+
+int change_volume(void)
+{
+    double tot_volume_i = box_volume(&gas) + box_volume(&liq);
+    double tot_volume_f = exp(log(tot_volume_i)+log(dV));
+    
+
+
+
+    return 0;
+}
+
+int particle_transfer(void)
+{
     return 0;
 }
 
@@ -250,13 +265,15 @@ int main(int argc, char* argv[])
     size_t seed = time(NULL);
     dsfmt_seed(seed);
 
-    energy = box_energy(&gas) + box_energy(&liq);
+    dV = 0.05 * (box_volume(&gas) + box_volume(&liq));
+    gas.energy = box_energy(&gas);
+    liq.energy = box_energy(&liq);
+    E_tot=gas.energy+liq.energy;
 
     printf("Starting gas volume:    %f\n", box_volume(&gas));
     printf("Starting liquid volume: %f\n", box_volume(&liq));
     printf("Starting total volume:  %f\n", box_volume(&gas) + box_volume(&liq));
-    printf("Starting energy:        %f\n", energy);
-    printf("Starting virial:        %f\n", virial); /* To be completed. */
+    printf("Starting total energy:        %f\n", E_tot);
     printf("Starting seed:          %lu\n", seed);
 
     FILE* fp = fopen("measurements.dat", "w");
@@ -264,13 +281,6 @@ int main(int argc, char* argv[])
         fprintf(stderr, "Error: could not write measurements.dat\n");
         exit(EXIT_FAILURE);
     }
-
-    /*
-       Here you will choose between:
-       1. particle displacement inside one box,
-       2. particle transfer between boxes,
-       3. volume exchange between boxes.
-    */
 
     fclose(fp);
 
