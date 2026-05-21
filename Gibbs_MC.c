@@ -19,6 +19,7 @@ const double delta           = 0.1;
 const double r_cut           = 2.5;
 const double Temperature     = 2.0;
 const double beta            = 1.0 / Temperature;
+const double delta           = 0.5;
 
 typedef struct {
     int n;
@@ -48,7 +49,9 @@ double E_tot=0 ;
 double n_tot=0; 
 double V_tot;
 double e_cut;
-double dV = 0.0;
+double dV = 0.0; // value will be assigned in the main
+
+/*FUNCTIONS*/
 
 double box_volume(const Box* b)
 {
@@ -245,10 +248,56 @@ void check_box(const Box* b)
     }
 }
 
+/*MOVES*/
+//1. Displace particle within the same box
+
 int displacement(void)
 {
-    return 0;
-}
+// choose the box where to displace a random particle
+    Box* b = NULL;
+    double u=dsfmt_genrand(); 
+    
+    if(u < 0.5){
+        b = &gas;
+    } else if(u < 1.0){
+            b = &liq;
+        } else {
+                fprintf(stderr, "Error: invalid random number in displacement function: u = %f\n", u);
+                return -1;
+            }
+// choose the particle to be displaced 
+    int n=(int)((b->n)*dsfmt_genrand());
+    // save the old position
+    double old_pos[NDIM]; 
+    for(int d=0; d<NDIM; d++){
+        old_pos[d]=b->r[n][d]; 
+    }
+    double Old_particle_Energy=particle_energy(b,n);
+    //make a trial move 
+    for(int d=0; d<NDIM; d++){
+        double shift=(dsfmt_genrand() - 0.5) * 2.0 * delta;
+        b->r[n][d]+=shift; 
+        //respect PBC, keep particles in box
+        if(b->r[n][d]<0){b->r[n][d]+= b->box[d];}
+        if(b->r[n][d]>=b->box[d]){b->r[n][d]-= b->box[d];}
+    }
+    // test energy 
+    double Trial_particle_Energy=particle_energy(b,n); 
+    //Monte Carlo move 
+    double dE = Trial_particle_Energy - Old_particle_Energy;
+    if(dE < 0.0 || dsfmt_genrand() < exp(-beta * dE)){
+        //move accepted (also update energy of the box)
+        b->energy += dE; 
+        E_tot+=dE; //important because energy isn't conserved 
+        return 1;
+    }
+    else{ //move rejected (revert)
+        for(int d = 0; d < NDIM; ++d) b->r[n][d] = old_pos[d];
+        return 0; 
+    }
+}    
+
+//2. Volume change
 
 void proposed_volume_move(Volume_Move*m, const Box*b){   // the const notation is just to signal that I am not modifying the old box (of course, it is the whole point of the function) I am just reading from it
     Box trial=*b; // I make a box that is identical to the original one, but now I modify it 
@@ -305,6 +354,7 @@ int change_volume(void)
     if(log_acc>=0 || log(u)<log_acc){
         gas.energy=Volume_Move_g.E_f;
         liq.energy=Volume_Move_l.E_f;
+        E_tot=gas.energy+liq.energy; 
         for(int d=0; d<NDIM; d++){
             gas.box[d]=Volume_Move_g.boxn; 
             liq.box[d]=Volume_Move_l.boxn;
@@ -323,10 +373,65 @@ int change_volume(void)
     } else return 0;
     
 }
+//3. Particle Transfer
 
 int particle_transfer(void)
-{
-    return 0;
+{  
+    // choose the source box (and the target box))
+    Box* source = NULL;
+    Box* target = NULL;
+    double u=dsfmt_genrand(); 
+    if(u < 0.5){
+        source = &gas;
+        target = &liq;
+    } else if(u < 1.0){
+            source = &liq;
+            target = &gas;
+        } else {
+                fprintf(stderr, "Error: invalid random number in displacement function: u = %f\n", u);
+                return -1;
+            }
+    // choose a random particle in the source box 
+    int n=(int)((source->n)*dsfmt_genrand());
+    // calculate its energy (since the new energy is e (old - energy of particle n) then DeltaE_source=-energy of particle n)
+    double DeltaE_source=-particle_energy(source,n);
+    // identify a new target position where to send the particle 
+    double r_target[NDIM]; 
+    for(int d=0;d<NDIM;d++){
+        r_target[d]=(target->box[d])*dsfmt_genrand();
+    }
+    // identify what energy would be associated with the new particle
+    // again E_final= energy old + energy of the target particle, so the delta is just the target particle energy
+    double DeltaE_target = particle_energy_at_position(target,r_target,-1);
+    double V_source=1;
+    for(int d=0; d<NDIM; d++){V_source*=source->box[d];}
+    double V_target=1;
+    for(int d=0; d<NDIM; d++){V_target*=target->box[d];}
+    double log_acc=-beta*DeltaE_source-beta*DeltaE_target-log(((target->n+1)*V_source)/(V_target*source->n));
+    // use again u as a different random number for a different use 
+    u=dsfmt_genrand(); 
+    if (u <= 0.0) u = 1e-16; // in order not to have -inf (the consequence is I always refute moves that have probability 10^-16 which is not a problem)
+    if(log_acc>=0 || log(u)<log_acc){//acceptance 
+
+        //modify source box
+        source->n -= 1;
+        for(int idx = n; idx<source->n; idx ++){
+            for(int d=0; d<NDIM; d++){
+                source->r[idx][d]=source->r[idx+1][d];
+            }
+        }
+        source->energy+=DeltaE_source;
+
+        //modify target box
+        target->n += 1;
+        for(int d=0; d<NDIM; d++){
+            source->r[source->n][d]=r_target[d]; // the particle is added on the n+1 th index for simplicity
+        }
+        target->energy+=DeltaE_target;
+
+        return 1;
+    }
+    else return 0; 
 }
 
 int main(int argc, char* argv[])
